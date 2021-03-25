@@ -1,1 +1,643 @@
 
+#state terraform provider and use programmatic access 
+provider "aws" {
+  access_key = "Your Acess_key"
+  secret_key = "Your secret_key"
+  region = "eu-west-2"
+}
+
+#Create VPC and specify cidr block
+resource "aws_vpc" "Project_VPC" {
+  cidr_block = "10.0.0.0/16"
+  tags = {
+    Name = "Project_VPC"
+  }
+}
+
+
+# Creating 4 subnets 2 public and 2 private  
+resource "aws_subnet" "Public_SN1" {
+  vpc_id     = aws_vpc.Project_VPC.id
+  cidr_block = "10.0.1.0/24"
+  availability_zone = "eu-west-2a"
+
+  tags = {
+    Name = "Public_SN1"
+  }
+}
+
+resource "aws_subnet" "Public_SN2" {
+  vpc_id     = aws_vpc.Project_VPC.id
+  cidr_block = "10.0.2.0/24"
+  availability_zone = "eu-west-2b"
+
+  tags = {
+    Name = "Public_SN2"
+  }
+}
+
+resource "aws_subnet" "Private_SN" {
+  vpc_id     = aws_vpc.Project_VPC.id
+  cidr_block = "10.0.3.0/24"
+  availability_zone = "eu-west-2a"
+
+  tags = {
+    Name = "Private_SN"
+  }
+}
+
+resource "aws_subnet" "Private_SN_BKP" {
+  vpc_id     = aws_vpc.Project_VPC.id
+  cidr_block = "10.0.4.0/24"
+  availability_zone = "eu-west-2b"
+
+  tags = {
+    Name = "Private_SN_BKP"
+  }
+}
+
+
+#Create frontEnd Security Group and BackEnd Security Group
+resource "aws_security_group" "PRJ_FrontEnd_SG" {
+    description = "Allow TLS inbound traffic"
+    vpc_id      = aws_vpc.Project_VPC.id
+
+    ingress {
+    description = "http rule"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    security_groups = ["${aws_security_group.PRJ_ELB_SG.id}"]
+  }
+  ingress {
+    description = "https rule"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    security_groups = ["${aws_security_group.PRJ_ELB_SG.id}"]
+    }
+
+  ingress {
+    description = "ssh rule"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Front_end_sg_rules"
+  }
+}
+
+
+
+
+
+
+resource "aws_security_group" "PRJ_BackEnd_SG" {
+    description = "Allow SSH and Mysql inbound traffic"
+    vpc_id      = aws_vpc.Project_VPC.id
+  ingress {
+    description = "mysql rule"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.1.0/24", "10.0.2.0/24"]
+  }
+
+  ingress {
+    description = "ssh rule"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.1.0/24", "10.0.2.0/24"]
+  }
+
+ 
+  tags = {
+    Name = "Back_end_sg_rules"
+  }
+}
+
+#Create Internet Gateway
+resource "aws_internet_gateway" "PRJ_IGW" {
+  vpc_id = aws_vpc.Project_VPC.id
+
+  tags = {
+    Name = "PRJ_IGW"
+  }
+}
+
+
+# Creating an Route Table for the public subnet!
+resource "aws_route_table" "Public_SN_PRJ_RT" {
+  depends_on = [
+  aws_vpc.Project_VPC,
+   aws_internet_gateway.PRJ_IGW ]
+
+   # VPC ID
+  vpc_id = aws_vpc.Project_VPC.id
+
+  # NAT Rule
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.PRJ_IGW .id
+  }
+
+  tags = {
+    Name = "Public_SN_PRJ_RT"
+  }
+}
+
+# Creating a resource for the Route Table Association!
+resource "aws_route_table_association" "Public_SN_RT_Asc"{
+
+  depends_on = [
+    aws_vpc.Project_VPC,
+    aws_subnet.Public_SN1,
+    aws_subnet.Public_SN2,
+    aws_route_table.Public_SN_PRJ_RT
+  ]
+
+# Public Subnet ID
+  subnet_id      = aws_subnet.Public_SN1.id
+
+#  Route Table ID
+  route_table_id = aws_route_table.Public_SN_PRJ_RT.id
+}
+
+resource "aws_route_table_association" "Public_SN_RT_Asc2"{
+
+  depends_on = [
+    aws_vpc.Project_VPC,
+    aws_subnet.Public_SN1,
+    aws_subnet.Private_SN,
+    aws_route_table.Public_SN_PRJ_RT
+  ]
+
+# Public Subnet ID
+  subnet_id      = aws_subnet.Public_SN2.id
+
+#  Route Table ID
+  route_table_id = aws_route_table.Public_SN_PRJ_RT.id
+}
+
+
+# Creating an Elastic IP for the NAT Gateway!
+resource "aws_eip" "PRJ_NGW_EIP" {
+  depends_on = [
+    aws_route_table_association.Public_SN_RT_Asc
+  ]
+  vpc = true
+}
+# Creating a NAT Gateway!
+resource "aws_nat_gateway" "PRJ_NGW"{
+  depends_on = [
+    aws_eip.PRJ_NGW_EIP
+  ]
+  # Allocating the Elastic IP to the NAT Gateway!
+  allocation_id = aws_eip.PRJ_NGW_EIP.id
+  
+  # Associate it in the Public Subnet!
+  subnet_id = aws_subnet.Public_SN1.id
+  tags = {
+    Name = "NGW Association to Public SN"
+  }
+}
+# Creating a Route Table for the Nat Gateway!
+resource "aws_route_table" "PRJ_NGW_RT"{
+  depends_on = [
+    aws_nat_gateway.PRJ_NGW
+  ]
+
+  vpc_id = aws_vpc.Project_VPC.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.PRJ_NGW.id
+  }
+  tags = {
+    Name = "Route Table for NAT Gateway"
+  }
+
+}
+
+
+# Creating an Route Table Association of the NAT Gateway route 
+# table with the Private Subnet!
+resource "aws_route_table_association" "PRJ_NGW_RT_Asc"{
+  depends_on = [
+    aws_route_table.PRJ_NGW_RT
+  ]
+
+#  Private Subnet ID for adding route table to Private SN!
+  subnet_id = aws_subnet.Private_SN.id
+
+# Route Table ID
+  route_table_id = aws_route_table.PRJ_NGW_RT.id
+}
+
+#Creating s3 Private bucket with tag
+
+resource "aws_s3_bucket" "S3_backup" {
+  bucket = "wp-backup-bucket-project"
+  acl    = "private"
+
+  tags = {
+    Name        = "Private_backup"
+    Environment = "prod"
+  }
+}
+
+# Creating s3 Public bucket with tag
+
+resource "aws_s3_bucket" "S3_media_file" {
+  bucket = "wp-files-bucket-project"
+  acl    = "public-read"
+  
+  tags          = {
+    Name        = "Public_media"
+    Environment = "prod"
+    }
+}
+
+resource "aws_s3_bucket_policy" "s3_media_bucket_policy" {
+  bucket = aws_s3_bucket.S3_media_file.id
+
+  policy = <<POLICY
+{
+  "Id": "Policy1611009746098",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Stmt1611009623593",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::wp-files-bucket-project/*",
+      "Principal": {
+        "AWS": [
+          "arn:aws:iam::408771655107:role/wp_project_s3_access"
+        ]
+      }
+    }
+  ]
+}
+POLICY
+}
+
+# Create Aws db subnet group
+resource "aws_db_subnet_group" "db_subnet_group" {
+  name       = "main"
+    subnet_ids = ["${aws_subnet.Private_SN.id}","${aws_subnet.Private_BK_SN.id}"]
+
+  tags = {
+    Name = "My DB subnet group"
+  }
+}
+
+# Script to create RDS
+
+resource "aws_db_instance" "wp_one_db" {
+
+  vpc_security_group_ids = [ "${aws_security_group.PRJ_BackEnd_SG.id}" ]
+  db_subnet_group_name = "${aws_db_subnet_group.db_subnet_group.id}"
+  allocated_storage    = 20
+  storage_type         = "gp2"
+  engine               = "mysql"
+  engine_version       = "5.7"
+  instance_class       = "db.t2.micro"
+  name                 = "wp_one_db"
+  username             = "cloudhightadmin"
+  password             = "Motiva123Logic!"
+  parameter_group_name = "default.mysql5.7"
+  skip_final_snapshot  = true
+  final_snapshot_identifier = "ignore"
+
+ tags          = {
+    Name        = "wp_one_db"
+    
+    } 
+}
+
+
+
+# Create Cloudfront distribution for S3 bucket
+
+locals {
+  s3_origin_id = "s3_wp_origin"
+}
+
+resource "aws_cloudfront_distribution" "cloudfront_wp_s3_distribution" {
+  origin {
+    domain_name = aws_s3_bucket.S3_media_file.bucket_regional_domain_name
+    origin_id   = local.s3_origin_id
+  }
+
+  enabled             = true
+  
+  
+  default_cache_behavior {
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = local.s3_origin_id
+
+    forwarded_values {
+      query_string = false
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+    viewer_protocol_policy = "allow-all"
+    min_ttl                = 0
+    default_ttl            = 3600
+    max_ttl                = 86400
+  }
+
+ 
+    price_class = "PriceClass_All"
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+     
+    }
+  }
+
+  tags = {
+    Environment = "Project_cloudfront"
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+}
+
+resource "aws_key_pair" "motiva_key" {
+  key_name   = "motiva_key"
+  public_key = file("~/.motiva/miniprj.pub")
+}
+
+
+# Deploying Web and App Servers
+resource "aws_instance" "PRJ_WEB_APP_SERVER" {
+  subnet_id = aws_subnet.Public_SN1.id 
+  vpc_security_group_ids = ["${aws_security_group.PRJ_FrontEnd_SG.id}"]
+  key_name = aws_key_pair.PRJ_KEY.key_name
+  ami = "ami-06178cf087598769c"
+  instance_type = "t2.micro"
+  associate_public_ip_address = true
+  #user_data = "${file("boot.sh")}"
+
+  connection {
+      type        = "ssh"
+      user        = "ec2-user"
+      private_key = file("~/.motiva/miniprj")
+      host        = self.public_ip
+    }
+
+  # provisioner "file" {
+  #     source = "boot.sh"
+  #     destination = "~/boot.sh"
+  # }
+
+  provisioner "remote-exec" {
+      inline = [
+        "cd ~",
+        "sudo #!/bin/bash",
+        "sudo yum update -y",
+        "sudo yum install httpd php php-mysqlnd -y",
+        "sudo cd /var/www/html",
+        "sudo echo 'welcome to Project 1 WEB SERVER' > index.html",
+        "sudo yum install wget -y",
+        "sudo wget https://wordpress.org/wordpress-5.1.1.tar.gz",
+        "sudo tar -xzf wordpress-5.1.1.tar.gz",
+        "sudo cp -r wordpress/* /var/www/html/",
+        "sudo rm -rf wordpress",
+        "sudo rm -rf wordpress-5.1.1.tar.gz",
+        "sudo chmod -R 755 wp-content",
+        "sudo chown -R apache:apache wp-content",
+        "sudo wget https://s3.amazonaws.com/bucketforwordpresslab-donotdelete/htaccess.txt",
+        "sudo mv htaccess.txt .htaccess",
+        "sudo chkconfig httpd on",
+        "sudo service httpd start",
+      ]
+  }
+  tags = {
+    name = "WP_instance"
+  }
+  }
+
+data "aws_instance" "wp_instance_data_source" {
+  filter {
+    name = "tag:name"
+    values = ["WP_instance"]
+  }
+
+   depends_on = [
+    "aws_instance.PRJ_WEB_APP_SERVER"
+  ]
+}
+
+
+resource "aws_ami_from_instance" "WP_image" {
+  name               = "WP_instance_image"
+  source_instance_id = "${data.aws_instance.wp_instance_data_source.id}"
+
+  depends_on = [
+    "aws_instance.PRJ_WEB_APP_SERVER"
+  ]
+}
+
+
+
+
+resource "aws_security_group" "PRJ_ELB_SG" {
+    description = "Allow TLS inbound traffic"
+    vpc_id      = aws_vpc.Project_VPC.id
+
+    ingress {
+    description = "http rule"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "https rule"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+   egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "ELB_SG_rules"
+  }
+}
+
+
+# Creation of Target group for the ALB
+
+resource "aws_lb_target_group" "PRJ_Target_Group" {
+  name     = "PRJ-Target-Group"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.Project_VPC.id
+}
+
+
+# resource "aws_lb_target_group_attachment" "Target_Instance_Attachment" {
+#   target_group_arn = aws_lb_target_group.PRJ_Target_Group.arn
+#   target_id        = aws_instance.PRJ_WEB_APP_SERVER.id
+#   port             = 80
+# }
+
+# Application ELB
+
+resource "aws_lb" "Application_Loadbalancer" {
+  name               = "PRJ-App-LB"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.PRJ_ELB_SG.id ]
+  subnets            = ["${aws_subnet.Public_SN1.id}","${aws_subnet.Public_SN2.id}" ]
+
+  # enable_deletion_protection = true
+
+  # access_logs {
+  #   bucket  = aws_wp-files-bucket-teamone
+  #   prefix  = "PRJ_Appl_LB"
+  #   enabled = true
+  # }
+
+  tags = {
+    name = "PRJ_ELB"
+  }
+}
+
+resource "aws_lb_listener" "front_end_listener" {
+  load_balancer_arn = aws_lb.Application_Loadbalancer.arn
+  port              = "80"
+  protocol          = "HTTP"
+ 
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.PRJ_Target_Group.arn
+  }
+}
+
+# Creating launch configuration for autoscaling group
+
+resource "aws_launch_configuration" "PRJ_Launch_config" {
+  name          = "PRJ_Launch_config"
+  image_id      =  "${aws_ami_from_instance.WP_image.id}"
+  instance_type = "t2.micro"
+  associate_public_ip_address = true
+  security_groups = ["${aws_security_group.PRJ_FrontEnd_SG.id}"]
+  key_name = aws_key_pair.PRJ_KEY.key_name
+}
+# Creating autoscaling group
+
+resource "aws_autoscaling_group" "PRJ_ASG" {
+  name                      = "PRJ_ASG"
+  max_size                  = 3
+  min_size                  = 1
+  health_check_grace_period = 300
+  health_check_type         = "ELB"
+  desired_capacity          = 1
+  force_delete              = true
+  # placement_group           = aws_placement_group.test.id
+  launch_configuration      = aws_launch_configuration.PRJ_Launch_config.name
+  vpc_zone_identifier       = ["${aws_subnet.Public_SN1.id}","${aws_subnet.Public_SN2.id}"]
+  target_group_arns         = ["${aws_lb_target_group.PRJ_Target_Group.arn}"]
+
+  
+}
+# Autoscaling group policy
+
+resource "aws_autoscaling_policy" "PRJ_ASG_Policy" {
+  name                   = "PRJ_ASG_Policy"
+  autoscaling_group_name = aws_autoscaling_group.PRJ_ASG.name
+  policy_type = "TargetTrackingScaling"
+
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+
+    target_value = 70.0
+  }
+}
+
+
+#create dashboard metric
+
+resource "aws_cloudwatch_dashboard" "PRJ_dashboard" {
+  dashboard_name = "PRJ_dashboard"
+
+  dashboard_body = <<EOF
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/EC2",
+            "CPUUtilization",
+            "InstanceId",
+            "${aws_instance.PRJ_WEB_APP_SERVER.id}"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "eu-west-2",
+        "title": "EC2 Instance CPU"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/EC2",
+            "NetworkIn",
+            "InstanceId",
+            "${aws_instance.PRJ_WEB_APP_SERVER.id}"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "eu-west-2",
+        "title": "EC2 Network In"
+      }
+    }
+  ]
+}
+EOF
+}
